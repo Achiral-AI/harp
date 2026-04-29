@@ -6,8 +6,9 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request as FastApiRequest
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 
+from . import auth_redirect
 from .hijack import HijackHandler
 from .litellm_client import LiteLLMClient
 from .proxy import UpstreamProxy
@@ -67,6 +68,16 @@ def _build_app(settings: Settings | None = None) -> FastAPI:
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     )
     async def catch_all(path: str, request: FastApiRequest) -> Response:
+        # Browser-launched URLs (sign-up, login, upgrade, billing, etc.) must
+        # be served by the real upstream — Harp has no HTML to render and the
+        # OAuth callback chain expects to terminate at app.warp.dev.
+        if auth_redirect.should_redirect_to_browser(request):
+            target = auth_redirect.build_upstream_url(
+                request, app.state.settings.upstream_base_url
+            )
+            logger.info("auth-redirect: %s -> %s", request.url.path, target)
+            return RedirectResponse(url=target, status_code=302)
+
         return await app.state.proxy.forward(request)
 
     return app

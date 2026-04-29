@@ -57,9 +57,15 @@ only. Apply the included patch to opt the OSS channel in:
 ```bash
 make patch-warp WARP_DIR=/path/to/your/warp-checkout
 cd /path/to/your/warp-checkout
-./script/bootstrap   # first time only; platform deps
-./script/run         # builds and runs Warp from source
+brew install protobuf      # bootstrap doesn't install this; the build needs it
+./script/bootstrap         # first time only; platform deps
+./script/run               # builds and runs `WarpOss.app` from source
 ```
+
+If bootstrap exits with `Please install Xcode from the App Store...`, install
+full Xcode (~12 GB), then run `sudo xcodebuild -license` and accept it before
+re-running bootstrap. See [`development.md`](development.md) and
+[`building-warp.md`](building-warp.md) for the full set of footguns we hit.
 
 ## 6. Point Warp at Harp
 

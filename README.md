@@ -64,12 +64,18 @@ cp litellm/config.local.yaml.example litellm/config.local.yaml
 sed -i '' 's|^LITELLM_CONFIG=.*|LITELLM_CONFIG=./litellm/config.local.yaml|' .env
 docker compose up -d
 ```
-Apply the Warp OSS channel patch:
+Apply the Warp OSS channel patch and build:
 ```bash
 cd /path/to/your/warp-checkout
 git apply /path/to/harp/patches/0001-allow-oss-channel-server-url-override.patch
-./script/run    # builds and launches the patched Warp
+brew install protobuf  # bootstrap doesn't install this; the build needs it
+./script/bootstrap     # may need `sudo xcodebuild -license` first
+./script/run           # builds and launches `WarpOss.app`
 ```
+
+Full walkthrough with all the gotchas we hit (Xcode license, missing
+`protoc`, the `cargo` PATH stutter, `warp-channel-config` SSH warnings) is
+in [`docs/building-warp.md`](docs/building-warp.md).
 
 Point Warp at Harp:
 

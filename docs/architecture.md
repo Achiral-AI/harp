@@ -30,7 +30,12 @@ inference endpoint when a local model can usefully serve the request.
 
 1. The patched Warp client signs in normally. Auth, GraphQL, telemetry, version
    pings — all transparent through the shim's catch-all proxy.
-2. When the client sends `POST /ai/multi-agent`, the shim:
+2. **Browser-launched URLs** (sign-up, login, upgrade, billing, account, team,
+   referral) are detected before the proxy step and 302'd to the same path on
+   `app.warp.dev`. The Warp client constructs these from `WARP_SERVER_ROOT_URL`
+   and shells out via `ctx.open_url(...)`; without the redirect they'd land
+   on the proxy with no HTML to render. See `src/harp/auth_redirect.py`.
+3. When the client sends `POST /ai/multi-agent`, the shim:
    - reads the protobuf body
    - decodes it into a `Request` message
    - runs the eligibility filter (`hijack.evaluate`)
@@ -38,7 +43,7 @@ inference endpoint when a local model can usefully serve the request.
      from a local model via LiteLLM
    - if not eligible: forwards the original raw bytes to upstream and pipes the
      SSE stream back unchanged
-3. In `local-only` mode, ineligible requests get a clean error event instead of
+4. In `local-only` mode, ineligible requests get a clean error event instead of
    a forward.
 
 ## Eligibility (v1)

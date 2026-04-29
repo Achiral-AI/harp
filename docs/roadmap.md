@@ -22,6 +22,20 @@
 - **Multi-replica example config** (`litellm/config.local.yaml.example`)
   showing simple-shuffle round-robin across a self-hosted vLLM/TRT-LLM cluster
   reachable via NodePort + Tailscale.
+- **`/stats` endpoint and `make watch` dashboard** for tracking the
+  served-local ratio, error rate, and per-reason breakdowns of why requests
+  bypass the local model.
+
+## Shipped (v0.1.2)
+
+- **Auth-redirect handler.** Browser-launched URLs (sign-up, login, upgrade,
+  account, billing, team, referral) are 302'd to the real upstream so OAuth
+  flows complete correctly. Without this, the patched Warp client opened
+  `http://127.0.0.1:8787/signup/remote?...` in the browser and got nothing.
+- **`docs/building-warp.md`.** Front-to-back walkthrough of building Warp OSS
+  on macOS, including footguns Warp's own bootstrap doesn't surface
+  (`protoc` missing, Xcode license at admin level, `cargo` PATH after fresh
+  rustup, the `warp-channel-config` SSH warning).
 
 ## Next (v0.2)
 
