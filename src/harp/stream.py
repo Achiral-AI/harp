@@ -18,7 +18,7 @@ def encode_event(event: ResponseEvent) -> bytes:
     """Encode one ResponseEvent into a single SSE frame, terminator included."""
 
     wire = event.SerializeToString()
-    encoded = base64.urlsafe_b64encode(wire).decode("ascii").rstrip("=")
+    encoded = base64.urlsafe_b64encode(wire).decode("ascii")
     # The client decodes ``message_event.data.trim_matches('"')``, so wrapping in
     # JSON-style quotes is harmless and matches Warp's own output.
     payload = json.dumps(encoded)

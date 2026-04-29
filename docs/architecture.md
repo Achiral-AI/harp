@@ -41,31 +41,54 @@ inference endpoint when a local model can usefully serve the request.
    - runs the eligibility filter (`hijack.evaluate`)
    - if eligible: streams a synthesized `ResponseEvent` sequence back, sourced
      from a local model via LiteLLM
-   - if not eligible: forwards the original raw bytes to upstream and pipes the
-     SSE stream back unchanged
-4. In `local-only` mode, ineligible requests get a clean error event instead of
-   a forward.
+   - if unsupported in `hijack` or `local-only`: emits a valid local SSE error
+     stream
+   - if running in pure `proxy` mode: forwards the original raw bytes to
+     upstream and pipes the SSE stream back unchanged
 
 ## Eligibility (v1)
 
-Conservative on purpose. A request is local-eligible iff:
+Conservative on purpose, but multi-turn text follow-ups are supported. A
+request is local-eligible iff:
 
 - `Request.input` is `user_inputs` containing exactly one `user_query`
-- `Request.task_context.tasks` is empty (no prior tool-call history)
-- `Request.settings.supported_tools` is empty (not an agentic flow)
+- `Request.input` is `resume_conversation` and prior task history contains a
+  user query to resume
 
-Everything else (tool-call results, multi-turn agentic loops, ambient/cloud
-runs, code-review pipelines, …) falls through to upstream.
+Warp advertises supported tools on normal user-query requests and includes
+prior `task_context.tasks` on follow-up turns. Harp does not reject those by
+itself anymore; it injects recent text history into the local model so phrases
+such as "as asked before" can resolve. Non-text flows such as tool-call
+results, ambient/cloud runs, code-review pipelines, and passive suggestions
+remain unsupported locally.
+
+In `hijack` mode, unsupported `/ai/multi-agent` requests return a valid local
+SSE stream ending in `StreamFinished{InternalError}` instead of being forwarded
+to Warp upstream. This avoids leaking upstream 403 HTML responses into the
+patched OSS client.
+
+## HarpCache
+
+Before calling LiteLLM, eligible local requests can receive a HarpCache system
+message. HarpCache builds a bounded, read-only snapshot from Warp's request
+context: current working directory, codebase roots, git branch/head, and active
+project rules.
+
+The snapshot includes a bounded manifest, important config/docs files, active
+project rules, and a few path-relevant snippets. It respects root-level
+`.gitignore`, `.warpignore`, `.warpindexingignore`, `.cursorignore`,
+`.cursorindexingignore`, and `.codeiumignore` files, de-duplicates manifest
+entries, and stops directory walking after `HARP_CACHE_WALK_TIME_BUDGET_S`.
+See `docs/harpcache.md` for details.
 
 ## Local response shape
 
 For an eligible request, the shim emits this `ResponseEvent` sequence:
 
-1. `StreamInit { conversation_id, request_id, run_id }`
+1. `StreamInit { conversation_id, request_id }`
 2. `ClientActions { BeginTransaction }`
 3. `ClientActions { CreateTask, AddMessagesToTask{assistant_message_scaffold} }`
-4. Repeated `ClientActions { AppendToMessageContent { mask: ["content"] } }` —
-   one per LiteLLM streaming token-delta
+4. Repeated `ClientActions { AppendToMessageContent { mask: ["agent_output.text"] } }` — one per LiteLLM streaming token-delta
 5. `ClientActions { CommitTransaction }`
 6. `StreamFinished { Done }`
 
@@ -87,5 +110,5 @@ the rest of the agentic surface are deliberately out of scope for v1.
 | Mode         | Eligible request   | Ineligible request  |
 | ------------ | ------------------ | ------------------- |
 | `proxy`      | Forward upstream   | Forward upstream    |
-| `hijack`     | Serve locally      | Forward upstream    |
+| `hijack`     | Serve locally      | Return error event  |
 | `local-only` | Serve locally      | Return error event  |

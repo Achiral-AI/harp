@@ -148,6 +148,45 @@ The terminal dashboard additionally shows top ineligibility reasons
 upstream-forward reasons. Counters reset whenever the Harp container
 restarts.
 
+## HarpCache
+
+HarpCache is Harp's local project-context cache for patched Warp OSS sessions.
+Warp sends the current working directory, indexed codebase paths, project rules,
+and git branch/head in each `/ai/multi-agent` request. HarpCache uses that
+metadata to build a bounded, read-only project snapshot and inject it into local
+model prompts.
+
+What HarpCache currently includes:
+
+- repo root, current `pwd`, git branch/head from Warp's request context
+- a bounded file manifest
+- important project files such as `README.md`, `AGENTS.md`, `WARP.md`,
+  `pyproject.toml`, `package.json`, `Cargo.toml`, and compose files
+- active project rules sent by Warp
+- a small set of query-relevant text snippets selected by path scoring
+
+The Docker Compose stack mounts `HARP_CACHE_HOST_ROOT` into the Harp container
+read-only at `HARP_CACHE_CONTAINER_ROOT`; HarpCache refuses to read outside that
+root. Defaults are set for this workstation's `/Users/sonicaarora/Projects`
+tree and can be changed in `.env`:
+
+```bash
+HARP_CACHE_ENABLED=true
+HARP_CACHE_HOST_ROOT=/Users/sonicaarora/Projects
+HARP_CACHE_CONTAINER_ROOT=/Users/sonicaarora/Projects
+HARP_CACHE_TTL_S=15
+HARP_CACHE_WALK_TIME_BUDGET_S=0.25
+```
+
+This is intentionally not a vector database yet. It is a fast, local,
+non-embedding cache that gives the local model immediate project awareness while
+keeping the read surface bounded.
+HarpCache also respects root-level `.gitignore`, `.warpignore`,
+`.warpindexingignore`, `.cursorignore`, `.cursorindexingignore`, and
+`.codeiumignore` files while building its bounded manifest.
+See [`docs/harpcache.md`](docs/harpcache.md) for the cache key, prompt shape,
+ignore-file behavior, and safety limits.
+
 ## Project layout
 
 ```

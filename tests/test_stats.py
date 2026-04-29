@@ -50,3 +50,14 @@ def test_local_only_rejection_path() -> None:
     assert s.served_local == 0
     assert s.forwarded_upstream == 0
     assert s.ineligibility_reasons == {"prior task history": 1}
+
+
+def test_local_error_path_counts_total_and_errors() -> None:
+    r = StatsRegistry()
+    r.record_local_error(reason="unsupported local request")
+    s = r.snapshot()
+    assert s.total == 1
+    assert s.errors == 1
+    assert s.served_local == 0
+    assert s.forwarded_upstream == 0
+    assert s.ineligibility_reasons == {"unsupported local request": 1}

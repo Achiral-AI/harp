@@ -36,6 +36,15 @@
   on macOS, including footguns Warp's own bootstrap doesn't surface
   (`protoc` missing, Xcode license at admin level, `cargo` PATH after fresh
   rustup, the `warp-channel-config` SSH warning).
+- **HarpCache.** Bounded local project-context cache injected into local model
+  prompts. It uses Warp's request metadata, active project rules, important
+  project files, an ignore-aware manifest, and path-relevant snippets.
+- **Protocol hardening.** Local streams preserve padded base64 URL-safe SSE
+  frames, omit unsupported `StreamInit.run_id` for the vendored client proto,
+  and return valid local SSE errors for unsupported hijack-mode requests.
+- **Second-turn text support.** Follow-up user queries with prior task history
+  are served locally with recent text-only history included in the model
+  prompt.
 
 ## Next (v0.2)
 
@@ -56,8 +65,8 @@
   guardrails.
 - **Conversation continuity.** Persist `conversation_id` ↔ assistant-message
   history so multi-turn chats work without falling back upstream.
-- **Local embeddings.** Index codebase via Ollama embeddings instead of Warp's
-  cloud index.
+- **Local embeddings.** Extend HarpCache with embeddings instead of relying
+  only on bounded manifests and path-scored snippets.
 - **Configurable hijack rules.** YAML-driven matchers (regex on user text, MCP
   server presence, etc.) instead of hard-coded eligibility logic.
 

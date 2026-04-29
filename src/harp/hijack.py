@@ -16,6 +16,7 @@ from typing import AsyncIterator
 from openai.types.chat import ChatCompletionMessageParam
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response, StreamingResponse
+from .harpcache import HarpCache
 
 from .litellm_client import LiteLLMClient
 from .proto_loader import (
@@ -33,6 +34,9 @@ from .stream import encode_event
 
 logger = logging.getLogger(__name__)
 
+_MAX_HISTORY_MESSAGES = 12
+_MAX_HISTORY_CHARS = 8_000
+
 
 @dataclass(slots=True)
 class Eligibility:
@@ -45,10 +49,10 @@ class Eligibility:
 
 def evaluate(req: Request) -> Eligibility:
     """v1 eligibility filter. Conservative on purpose.
-
-    Serve locally only when the request is a fresh, single-turn user query
-    with no tools to be invoked and no prior tool-call history. Anything more
-    complex is forwarded upstream.
+    Serve locally when the request is a user query. Warp includes prior task
+    history on follow-up turns; Harp can pass recent text history through to
+    the local model even though full client-tool execution is still a later
+    milestone.
     """
 
     input_obj = req.input
@@ -56,6 +60,11 @@ def evaluate(req: Request) -> Eligibility:
         return Eligibility(False, "no input.type set")
 
     kind = input_obj.WhichOneof("type")
+    if kind == "resume_conversation":
+        user_text = _latest_user_query(req)
+        if not user_text:
+            return Eligibility(False, "resume_conversation has no user query history")
+        return Eligibility(True, "resume_conversation", user_text=user_text)
     if kind != "user_inputs":
         return Eligibility(False, f"input.type={kind} not yet handled locally")
 
@@ -68,17 +77,25 @@ def evaluate(req: Request) -> Eligibility:
     if sub_kind != "user_query":
         return Eligibility(False, f"sub-input={sub_kind} not yet handled locally")
 
-    if req.task_context.tasks:
-        # Existing tasks imply prior tool-call state we don't yet replay locally.
-        return Eligibility(False, "request has prior task history")
-
     # NOTE: as of v0.1.1 we deliberately do *not* reject requests that advertise
     # `supported_tools`. Warp's client lists its toolset on every fresh
     # user_query, but with no prior task history we're at the start of the
     # conversation and a text-only reply from the local model is acceptable.
     # Read-only tool support (read_files, grep, file_glob) is the v0.2 milestone.
 
+    if req.task_context.tasks:
+        return Eligibility(True, "user_query_with_history", user_text=item.user_query.query)
     return Eligibility(True, "ok", user_text=item.user_query.query)
+
+
+def _latest_user_query(req: Request) -> str:
+    """Return the most recent user query from task history, if present."""
+
+    for task in reversed(req.task_context.tasks):
+        for message in reversed(task.messages):
+            if message.WhichOneof("message") == "user_query" and message.user_query.query:
+                return message.user_query.query
+    return ""
 
 
 class HijackHandler:
@@ -90,11 +107,13 @@ class HijackHandler:
         proxy: UpstreamProxy,
         llm: LiteLLMClient,
         stats: StatsRegistry,
+        harpcache: HarpCache | None = None,
     ) -> None:
         self._settings = settings
         self._proxy = proxy
         self._llm = llm
         self._stats = stats
+        self._harpcache = harpcache
 
     async def handle(self, request: StarletteRequest) -> Response:
         body = await request.body()
@@ -129,19 +148,22 @@ class HijackHandler:
         )
 
         if not verdict.eligible:
-            self._stats.record_ineligibility(reason=verdict.reason)
             if self._settings.mode == ShimMode.LOCAL_ONLY:
                 self._stats.record_rejected_local_only(reason=verdict.reason)
                 return _local_only_error(verdict.reason)
+            if self._settings.mode == ShimMode.HIJACK:
+                self._stats.record_local_error(reason=verdict.reason)
+                return _local_error(f"local request unsupported: {verdict.reason}")
+            self._stats.record_ineligibility(reason=verdict.reason)
             self._stats.record_forwarded_upstream(reason=verdict.reason)
             return await self._proxy.forward(request, body=body)
 
         self._stats.record_served_local()
-        return self._serve_local(verdict)
+        return self._serve_local(verdict, decoded)
 
     # ------------------------------------------------------------------ local
 
-    def _serve_local(self, verdict: Eligibility) -> Response:
+    def _serve_local(self, verdict: Eligibility, req: Request | None = None) -> Response:
         async def _events() -> AsyncIterator[bytes]:
             conversation_id = str(uuid.uuid4())
             request_id = str(uuid.uuid4())
@@ -154,7 +176,6 @@ class HijackHandler:
                     init=ResponseEvent.StreamInit(
                         conversation_id=conversation_id,
                         request_id=request_id,
-                        run_id=conversation_id,
                     )
                 )
             )
@@ -199,22 +220,25 @@ class HijackHandler:
                         "Answer concisely. If the user asks for a shell command, prefer "
                         "POSIX-compatible syntax."
                     ),
-                },
-                {"role": "user", "content": verdict.user_text},
+                }
             ]
+            harpcache_context = self._harpcache_context(req, verdict.user_text)
+            if harpcache_context:
+                messages.append({"role": "system", "content": harpcache_context})
+            messages.extend(_conversation_history_messages(req, verdict.user_text))
+            messages.append({"role": "user", "content": verdict.user_text})
 
             stripper = ThinkingStripper()
             try:
                 async for delta in self._llm.stream_chat(messages):
                     visible = stripper.feed(delta)
                     if visible:
-                        yield encode_event(
-                            _append_message_content(task_id, message_id, visible)
-                        )
+                        yield encode_event(_append_message_content(task_id, message_id, visible))
                 tail = stripper.flush()
                 if tail:
                     yield encode_event(_append_message_content(task_id, message_id, tail))
             except Exception as exc:  # pragma: no cover - surfaced as a finished/error event
+                self._stats.record_error()
                 logger.exception("Local stream failed; emitting StreamFinished{InternalError}")
                 yield encode_event(
                     ResponseEvent(
@@ -239,13 +263,86 @@ class HijackHandler:
             # 6. StreamFinished{Done}
             yield encode_event(
                 ResponseEvent(
-                    finished=ResponseEvent.StreamFinished(
-                        done=ResponseEvent.StreamFinished.Done()
-                    )
+                    finished=ResponseEvent.StreamFinished(done=ResponseEvent.StreamFinished.Done())
                 )
             )
 
         return StreamingResponse(_events(), media_type="text/event-stream")
+
+    def _harpcache_context(self, req: Request | None, user_text: str) -> str:
+        if self._harpcache is None or req is None:
+            return ""
+        try:
+            context = self._harpcache.build_context(req, user_text)
+        except Exception:  # pragma: no cover - cache failures should never break chat
+            logger.exception("HarpCache failed; continuing without project context")
+            return ""
+        if context is None:
+            return ""
+        logger.info(
+            "HarpCache context attached: repo=%s cache_hit=%s",
+            context.repo_root,
+            context.cache_hit,
+        )
+        return context.text
+
+
+def _conversation_history_messages(
+    req: Request | None,
+    current_user_text: str,
+) -> list[ChatCompletionMessageParam]:
+    if req is None:
+        return []
+
+    history: list[ChatCompletionMessageParam] = []
+    for task in req.task_context.tasks:
+        for message in task.messages:
+            kind = message.WhichOneof("message")
+            if kind == "user_query" and message.user_query.query:
+                history.append({"role": "user", "content": message.user_query.query})
+            elif kind == "agent_output" and message.agent_output.text:
+                history.append({"role": "assistant", "content": message.agent_output.text})
+            elif kind == "summarization":
+                summary = _summarization_text(message)
+                if summary:
+                    history.append(
+                        {"role": "assistant", "content": f"Conversation summary: {summary}"}
+                    )
+
+    if (
+        history
+        and history[-1].get("role") == "user"
+        and history[-1].get("content") == current_user_text
+    ):
+        history.pop()
+
+    return _trim_history(history)
+
+
+def _summarization_text(message: Message) -> str:
+    if message.summarization.WhichOneof("summary_type") != "conversation_summary":
+        return ""
+    return message.summarization.conversation_summary.summary
+
+
+def _trim_history(
+    history: list[ChatCompletionMessageParam],
+) -> list[ChatCompletionMessageParam]:
+    trimmed: list[ChatCompletionMessageParam] = []
+    remaining = _MAX_HISTORY_CHARS
+    for message in reversed(history[-_MAX_HISTORY_MESSAGES:]):
+        content = str(message.get("content", ""))
+        if not content:
+            continue
+        if len(content) > remaining:
+            content = content[:remaining]
+        if not content:
+            break
+        trimmed.append({"role": message["role"], "content": content})
+        remaining -= len(content)
+        if remaining <= 0:
+            break
+    return list(reversed(trimmed))
 
 
 def _append_message_content(task_id: str, message_id: str, content_delta: str) -> ResponseEvent:
@@ -357,22 +454,25 @@ class ThinkingStripper:
 def _local_only_error(reason: str) -> Response:
     """LOCAL_ONLY mode: refuse to forward and emit a clear finished/error event."""
 
+    return _local_error(f"local-only mode rejected request: {reason}")
+
+
+def _local_error(message: str) -> Response:
+    """Emit a valid local SSE stream that finishes with an internal error."""
+
     async def _events() -> AsyncIterator[bytes]:
         yield encode_event(
             ResponseEvent(
                 init=ResponseEvent.StreamInit(
                     conversation_id=str(uuid.uuid4()),
                     request_id=str(uuid.uuid4()),
-                    run_id=str(uuid.uuid4()),
                 )
             )
         )
         yield encode_event(
             ResponseEvent(
                 finished=ResponseEvent.StreamFinished(
-                    internal_error=ResponseEvent.StreamFinished.InternalError(
-                        message=f"local-only mode rejected request: {reason}"
-                    )
+                    internal_error=ResponseEvent.StreamFinished.InternalError(message=message)
                 )
             )
         )

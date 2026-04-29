@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request as FastApiRequest
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from . import auth_redirect
+from .harpcache import HarpCache
 from .hijack import HijackHandler
 from .litellm_client import LiteLLMClient
 from .proxy import UpstreamProxy
@@ -26,11 +27,13 @@ def _build_app(settings: Settings | None = None) -> FastAPI:
         proxy = UpstreamProxy(settings.upstream_base_url)
         llm = LiteLLMClient(settings)
         stats = StatsRegistry()
+        harpcache = HarpCache(settings)
         app.state.settings = settings
         app.state.proxy = proxy
         app.state.llm = llm
         app.state.stats = stats
-        app.state.hijack = HijackHandler(settings, proxy, llm, stats)
+        app.state.harpcache = harpcache
+        app.state.hijack = HijackHandler(settings, proxy, llm, stats, harpcache)
         logger.info(
             "harp ready: mode=%s upstream=%s litellm=%s",
             settings.mode,
@@ -72,9 +75,7 @@ def _build_app(settings: Settings | None = None) -> FastAPI:
         # be served by the real upstream — Harp has no HTML to render and the
         # OAuth callback chain expects to terminate at app.warp.dev.
         if auth_redirect.should_redirect_to_browser(request):
-            target = auth_redirect.build_upstream_url(
-                request, app.state.settings.upstream_base_url
-            )
+            target = auth_redirect.build_upstream_url(request, app.state.settings.upstream_base_url)
             logger.info("auth-redirect: %s -> %s", request.url.path, target)
             return RedirectResponse(url=target, status_code=302)
 

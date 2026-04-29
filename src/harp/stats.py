@@ -8,7 +8,7 @@ fine for a single-user localhost tool.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from threading import Lock
 from time import time
 
@@ -71,6 +71,12 @@ class StatsRegistry:
     def record_error(self) -> None:
         with self._lock:
             self._errors += 1
+
+    def record_local_error(self, *, reason: str) -> None:
+        with self._lock:
+            self._total += 1
+            self._errors += 1
+            self._ineligibility_reasons[reason] += 1
 
     # --- accessors -----------------------------------------------------------
 
