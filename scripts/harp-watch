@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# harp-watch — live dashboard for /ai/multi-agent traffic.
+#
+# Polls Harp's /stats endpoint every second and renders a savings table.
+# Exit with Ctrl+C.
+
+set -uo pipefail
+
+SHIM_PORT="${SHIM_PORT:-8787}"
+SHIM_URL="http://127.0.0.1:${SHIM_PORT}/stats"
+INTERVAL="${HARP_WATCH_INTERVAL:-1}"
+
+# We need either python3 or jq for parsing; prefer python3.
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "harp-watch: python3 not found in PATH" >&2
+  exit 1
+fi
+
+# Pretty-print one snapshot read from stdin.
+render() {
+  python3 - <<'PY'
+import json, sys, time
+
+raw = sys.stdin.read().strip()
+if not raw:
+    print("harp-watch: empty response from /stats", file=sys.stderr)
+    sys.exit(0)
+
+try:
+    s = json.loads(raw)
+except json.JSONDecodeError as e:
+    print(f"harp-watch: bad JSON from /stats: {e}", file=sys.stderr)
+    sys.exit(0)
+
+total = s.get("total", 0)
+local = s.get("served_local", 0)
+fwd = s.get("forwarded_upstream", 0)
+err = s.get("errors", 0)
+ratio = s.get("local_serve_ratio", 0.0)
+uptime = s.get("uptime_s", 0.0)
+
+# 24-segment ASCII bar.
+bar_w = 24
+filled = int(round(bar_w * ratio))
+bar = "█" * filled + "·" * (bar_w - filled)
+
+print("\033[H\033[2J", end="")  # clear screen, home cursor
+print(f"  harp · /stats · uptime {uptime:>6.0f}s · poll @ {time.strftime('%H:%M:%S')}")
+print()
+print(f"  Total requests       {total:>6}")
+print(f"  Served local         {local:>6}   ({local/total:.1%})" if total else f"  Served local         {local:>6}")
+print(f"  Forwarded upstream   {fwd:>6}   ({fwd/total:.1%})" if total else f"  Forwarded upstream   {fwd:>6}")
+print(f"  Errors               {err:>6}")
+print()
+print(f"  Local-serve ratio:  [{bar}] {ratio:.1%}")
+print()
+
+reasons = s.get("ineligibility_reasons", {})
+if reasons:
+    print("  Ineligibility reasons (top 5):")
+    for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])[:5]:
+        print(f"    {v:>4}  {k}")
+    print()
+
+forwards = s.get("forward_reasons", {})
+if forwards:
+    print("  Forward reasons (top 5):")
+    for k, v in sorted(forwards.items(), key=lambda kv: -kv[1])[:5]:
+        print(f"    {v:>4}  {k}")
+PY
+}
+
+echo "harp-watch: polling ${SHIM_URL} every ${INTERVAL}s · Ctrl+C to exit"
+sleep 1
+
+while :; do
+  if ! curl -fsS --max-time 2 "${SHIM_URL}" 2>/dev/null | render; then
+    printf "\rharp-watch: cannot reach %s — is the shim up? (\`make up\`)\n" "${SHIM_URL}"
+  fi
+  sleep "${INTERVAL}"
+done

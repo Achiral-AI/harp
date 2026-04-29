@@ -28,6 +28,7 @@ from .proto_loader import (
 )
 from .proxy import UpstreamProxy
 from .settings import Settings, ShimMode
+from .stats import StatsRegistry
 from .stream import encode_event
 
 logger = logging.getLogger(__name__)
@@ -88,15 +89,18 @@ class HijackHandler:
         settings: Settings,
         proxy: UpstreamProxy,
         llm: LiteLLMClient,
+        stats: StatsRegistry,
     ) -> None:
         self._settings = settings
         self._proxy = proxy
         self._llm = llm
+        self._stats = stats
 
     async def handle(self, request: StarletteRequest) -> Response:
         body = await request.body()
 
         if self._settings.mode == ShimMode.PROXY:
+            self._stats.record_forwarded_upstream(reason="mode=proxy")
             return await self._proxy.forward(request, body=body)
 
         if len(body) > self._settings.max_local_request_bytes:
@@ -105,6 +109,7 @@ class HijackHandler:
                 len(body),
                 self._settings.max_local_request_bytes,
             )
+            self._stats.record_forwarded_upstream(reason="body too large")
             return await self._proxy.forward(request, body=body)
 
         try:
@@ -112,6 +117,7 @@ class HijackHandler:
             decoded.ParseFromString(body)
         except Exception:
             logger.exception("Failed to decode multi-agent Request; forwarding upstream")
+            self._stats.record_forwarded_upstream(reason="proto decode failed")
             return await self._proxy.forward(request, body=body)
 
         verdict = evaluate(decoded)
@@ -123,10 +129,14 @@ class HijackHandler:
         )
 
         if not verdict.eligible:
+            self._stats.record_ineligibility(reason=verdict.reason)
             if self._settings.mode == ShimMode.LOCAL_ONLY:
+                self._stats.record_rejected_local_only(reason=verdict.reason)
                 return _local_only_error(verdict.reason)
+            self._stats.record_forwarded_upstream(reason=verdict.reason)
             return await self._proxy.forward(request, body=body)
 
+        self._stats.record_served_local()
         return self._serve_local(verdict)
 
     # ------------------------------------------------------------------ local

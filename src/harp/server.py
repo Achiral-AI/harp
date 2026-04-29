@@ -12,6 +12,7 @@ from .hijack import HijackHandler
 from .litellm_client import LiteLLMClient
 from .proxy import UpstreamProxy
 from .settings import Settings
+from .stats import StatsRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +24,12 @@ def _build_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         proxy = UpstreamProxy(settings.upstream_base_url)
         llm = LiteLLMClient(settings)
+        stats = StatsRegistry()
         app.state.settings = settings
         app.state.proxy = proxy
         app.state.llm = llm
-        app.state.hijack = HijackHandler(settings, proxy, llm)
+        app.state.stats = stats
+        app.state.hijack = HijackHandler(settings, proxy, llm, stats)
         logger.info(
             "harp ready: mode=%s upstream=%s litellm=%s",
             settings.mode,
@@ -50,6 +53,10 @@ def _build_app(settings: Settings | None = None) -> FastAPI:
                 "upstream": settings.upstream_base_url,
             }
         )
+
+    @app.get("/stats")
+    async def stats() -> JSONResponse:
+        return JSONResponse(app.state.stats.snapshot().to_dict())
 
     @app.post("/ai/multi-agent")
     async def multi_agent(request: FastApiRequest) -> Response:

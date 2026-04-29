@@ -116,9 +116,21 @@ Caveats worth knowing:
   so your **electricity bill creeps up** but stays negligible vs API spend at
   typical home loads.
 - Mileage varies by usage pattern. Heavy agentic coders save less under
-  v0.1.1; heavy conversational users see the full 40–70%. Track your real
-  ratio by tailing `make logs` — each `/ai/multi-agent` call is logged with
-  `eligible=true|false`.
+  v0.1.1; heavy conversational users see the full 40–70%.
+
+### Tracking your actual savings
+
+Harp ships a live dashboard that reads its own counters from `GET /stats`:
+
+```bash
+make watch     # full-screen live view, refreshed every second
+make stats     # one JSON snapshot for scripts / quick checks
+```
+
+The dashboard shows total requests, the served-local ratio, top
+ineligibility reasons (so you know *why* requests bypass the local model),
+and top upstream-forward reasons. Counters reset whenever the Harp container
+restarts.
 
 ## Project layout
 
