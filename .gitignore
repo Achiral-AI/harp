@@ -3,6 +3,10 @@
 .env.local
 .env.*.local
 
+# LiteLLM personal config overrides
+litellm/config.local.yaml
+litellm/config.*.local.yaml
+
 # Python
 __pycache__/
 *.py[cod]

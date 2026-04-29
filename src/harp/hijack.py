@@ -71,10 +71,11 @@ def evaluate(req: Request) -> Eligibility:
         # Existing tasks imply prior tool-call state we don't yet replay locally.
         return Eligibility(False, "request has prior task history")
 
-    settings = req.settings
-    if settings.supported_tools:
-        # Local handling for tool-calling agents lands in v2.
-        return Eligibility(False, "request advertises supported_tools (agentic flow)")
+    # NOTE: as of v0.1.1 we deliberately do *not* reject requests that advertise
+    # `supported_tools`. Warp's client lists its toolset on every fresh
+    # user_query, but with no prior task history we're at the start of the
+    # conversation and a text-only reply from the local model is acceptable.
+    # Read-only tool support (read_files, grep, file_glob) is the v0.2 milestone.
 
     return Eligibility(True, "ok", user_text=item.user_query.query)
 
@@ -192,9 +193,17 @@ class HijackHandler:
                 {"role": "user", "content": verdict.user_text},
             ]
 
+            stripper = ThinkingStripper()
             try:
                 async for delta in self._llm.stream_chat(messages):
-                    yield encode_event(_append_message_content(task_id, message_id, delta))
+                    visible = stripper.feed(delta)
+                    if visible:
+                        yield encode_event(
+                            _append_message_content(task_id, message_id, visible)
+                        )
+                tail = stripper.flush()
+                if tail:
+                    yield encode_event(_append_message_content(task_id, message_id, tail))
             except Exception as exc:  # pragma: no cover - surfaced as a finished/error event
                 logger.exception("Local stream failed; emitting StreamFinished{InternalError}")
                 yield encode_event(
@@ -252,6 +261,87 @@ def _append_message_content(task_id: str, message_id: str, content_delta: str) -
             ]
         )
     )
+
+
+class ThinkingStripper:
+    """Strip ``<think>...</think>`` blocks from a streaming token stream.
+
+    Qwen3 (and similar reasoning models) interleave a ``<think>...</think>``
+    block before the user-visible answer. We disable thinking at request build
+    time via the ``chat_template_kwargs`` extra body, but some servers still
+    leak partial reasoning tokens. This filter buffers across chunks so a tag
+    split mid-stream (e.g. ``<thi`` then ``nk>``) is still detected.
+    """
+
+    _OPEN = "<think>"
+    _CLOSE = "</think>"
+
+    def __init__(self) -> None:
+        self._mode: str = "outside"  # or "inside"
+        self._buf: str = ""
+
+    def feed(self, chunk: str) -> str:
+        """Append ``chunk`` and return the content safe to emit so far."""
+
+        self._buf += chunk
+        out: list[str] = []
+        while True:
+            if self._mode == "outside":
+                idx = self._buf.find(self._OPEN)
+                if idx != -1:
+                    out.append(self._buf[:idx])
+                    self._buf = self._buf[idx + len(self._OPEN) :]
+                    self._mode = "inside"
+                    continue
+                # No full open tag. Hold back any trailing prefix that could be
+                # the *start* of a future ``<think>`` so we don't emit ``<th``
+                # only to retract it next chunk.
+                hold = self._max_partial_open()
+                if hold:
+                    out.append(self._buf[: -len(hold)])
+                    self._buf = hold
+                else:
+                    out.append(self._buf)
+                    self._buf = ""
+                break
+            # inside
+            idx = self._buf.find(self._CLOSE)
+            if idx != -1:
+                # Drop the reasoning block entirely.
+                self._buf = self._buf[idx + len(self._CLOSE) :]
+                self._mode = "outside"
+                continue
+            # Hold back any trailing prefix that could be the start of
+            # ``</think>`` so we don't accidentally exit early.
+            hold = self._max_partial_close()
+            self._buf = hold
+            break
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Final flush after the stream ends."""
+
+        if self._mode == "outside":
+            out, self._buf = self._buf, ""
+            return out
+        # Stream ended mid-thinking; drop the rest.
+        self._buf = ""
+        return ""
+
+    def _max_partial_open(self) -> str:
+        return self._max_partial_suffix(self._OPEN)
+
+    def _max_partial_close(self) -> str:
+        return self._max_partial_suffix(self._CLOSE)
+
+    def _max_partial_suffix(self, tag: str) -> str:
+        """Return the longest suffix of ``self._buf`` that is also a prefix of ``tag``."""
+
+        max_len = min(len(self._buf), len(tag) - 1)
+        for n in range(max_len, 0, -1):
+            if tag.startswith(self._buf[-n:]):
+                return self._buf[-n:]
+        return ""
 
 
 def _local_only_error(reason: str) -> Response:

@@ -53,6 +53,17 @@ cp .env.example .env
 # edit .env to set OLLAMA_BASE_URL and (optionally) ANTHROPIC_API_KEY etc.
 docker compose up -d
 ```
+
+Got a multi-replica vLLM/TRT-LLM cluster (e.g. behind Tailscale + NodePort)
+rather than a single Ollama? Copy the example local config and point
+`LITELLM_CONFIG` at it in `.env` — it's gitignored so personal endpoints
+don't end up in version control:
+```bash
+cp litellm/config.local.yaml.example litellm/config.local.yaml
+# edit litellm/config.local.yaml with your endpoint URLs and model name
+sed -i '' 's|^LITELLM_CONFIG=.*|LITELLM_CONFIG=./litellm/config.local.yaml|' .env
+docker compose up -d
+```
 Apply the Warp OSS channel patch:
 ```bash
 cd /path/to/your/warp-checkout
@@ -79,6 +90,35 @@ Harp has three operating modes, controlled by `SHIM_MODE` in `.env`:
   requests, errors, or low-quality responses.
 - `local-only` — refuse to forward upstream. For air-gapped / fully-offline
   use. Expect failures on agentic flows that local models can't handle yet.
+
+## Expected savings
+
+Harp's *eligibility filter* decides which requests get served from your local
+model vs. forwarded to Warp's backend. The wider the filter, the more spend
+stays on your hardware — at the cost of degrading quality on agentic flows
+that really need real tool calls.
+
+| Stage                          | Eligible request types                                  | Typical spend served locally |
+| ------------------------------ | ------------------------------------------------------- | ---------------------------- |
+| v0.1 strict *(deprecated)*     | Plain user_query with no tools advertised               | ~0%                          |
+| **v0.1.1 relaxed** *(current)* | Fresh user_query, even when the client advertises tools | **40–70%**                   |
+| v0.2 read-only tools           | + `read_files`, `grep`, `file_glob`                     | 70–85%                       |
+| v0.3 write tools               | + `apply_file_diffs` with guardrails                    | 95%+                          |
+| v1.0 full proto                | Multi-turn agentic loops served locally                 | ~100%                         |
+
+Caveats worth knowing:
+
+- A weaker local model will fumble some agentic flows that frontier APIs nail.
+  Failed local requests fall through to Warp's backend automatically; an
+  optional frontier-improver pass can re-run iffy local outputs through a
+  frontier model before returning.
+- Local serving has higher token volume (no provider caching, longer replies)
+  so your **electricity bill creeps up** but stays negligible vs API spend at
+  typical home loads.
+- Mileage varies by usage pattern. Heavy agentic coders save less under
+  v0.1.1; heavy conversational users see the full 40–70%. Track your real
+  ratio by tailing `make logs` — each `/ai/multi-agent` call is logged with
+  `eligible=true|false`.
 
 ## Project layout
 

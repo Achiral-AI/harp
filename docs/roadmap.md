@@ -9,11 +9,25 @@
 - LiteLLM proxy with `local-primary` and `frontier-fallback` model groups,
   plus error- and context-window-fallback chains.
 
+## Shipped (v0.1.1)
+
+- **Relaxed eligibility filter.** Fresh user queries are served locally even
+  when the client advertises a toolset, as long as no prior tool-call history
+  exists. Lifts typical local-serve ratio from ~0% to 40–70%.
+- **Reasoning-mode handling.** `enable_thinking=false` is sent through to
+  Qwen-class models via `chat_template_kwargs`, with a defensive
+  `<think>...</think>` stripper on the streaming output for any leakage.
+- **`LITELLM_CONFIG` env var** to point Compose at a personal LiteLLM config
+  (e.g. `litellm/config.local.yaml`) without modifying the bundled defaults.
+- **Multi-replica example config** (`litellm/config.local.yaml.example`)
+  showing simple-shuffle round-robin across a self-hosted vLLM/TRT-LLM cluster
+  reachable via NodePort + Tailscale.
+
 ## Next (v0.2)
 
-- **Read-only tool support.** Allow eligibility for requests that advertise a
-  small read-only toolset (`read_files`, `grep`, `file_glob`). Translate these
-  to OpenAI tool-calls and back to `ResponseEvent` actions.
+- **Read-only tool execution locally.** Translate the client's `read_files`,
+  `grep`, `file_glob` tool calls to OpenAI tool-call schema, run them locally,
+  and feed the results back as `ResponseEvent` actions.
 - **Frontier-improver pass.** Behind `ENABLE_FRONTIER_IMPROVER`, pipe local
   responses through a frontier model when a quality heuristic fails (very
   short, JSON-parse failure, repeated tokens).

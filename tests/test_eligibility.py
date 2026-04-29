@@ -18,14 +18,16 @@ def test_eligible_simple_user_query() -> None:
     assert verdict.user_text == "what's the date command?"
 
 
-def test_ineligible_when_supported_tools_present() -> None:
+def test_eligible_when_supported_tools_present_but_no_history() -> None:
+    """v0.1.1: tools may be advertised; we still serve fresh user queries locally."""
     req = Request()
     req.input.user_inputs.inputs.add().user_query.query = "list files in this dir"
-    # Any tool advertised flips it agentic.
+    # Warp's client advertises tools on every request, but with no prior task
+    # history we're at the start of the conversation and a text-only reply is OK.
     req.settings.supported_tools.append(ToolType.RUN_SHELL_COMMAND)
     verdict = evaluate(req)
-    assert not verdict.eligible
-    assert "supported_tools" in verdict.reason
+    assert verdict.eligible
+    assert verdict.user_text == "list files in this dir"
 
 
 def test_ineligible_with_prior_task_history() -> None:

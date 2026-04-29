@@ -39,6 +39,10 @@ class LiteLLMClient:
                 messages=messages,
                 temperature=temperature,
                 stream=True,
+                # Qwen3 (and similar reasoning models) honour this template
+                # kwarg; vLLM/TRT-LLM pass it through to the chat template.
+                # The shim also strips leaked ``<think>`` blocks defensively.
+                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
         except Exception:
             logger.exception("LiteLLM chat completion failed for model=%s", target)

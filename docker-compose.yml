@@ -35,13 +35,15 @@ services:
       - .env
     command: ["--config", "/app/config.yaml", "--host", "0.0.0.0", "--port", "4000"]
     volumes:
-      - ./litellm/config.yaml:/app/config.yaml:ro
+      # Override which LiteLLM config is mounted with LITELLM_CONFIG in .env
+      # (e.g. LITELLM_CONFIG=./litellm/config.local.yaml for a personal setup).
+      - ${LITELLM_CONFIG:-./litellm/config.yaml}:/app/config.yaml:ro
     ports:
       - "4000:4000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4000/health/liveliness"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness').read()"]
       interval: 10s
       timeout: 3s
       retries: 10
