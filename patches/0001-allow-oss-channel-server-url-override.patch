@@ -1,0 +1,36 @@
+From: warp-local-inference
+Subject: [PATCH] Allow Channel::Oss to honor WARP_SERVER_ROOT_URL overrides
+
+The OSS Warp build defaults to `Channel::Oss`, which gates server URL
+overrides via `allows_server_url_overrides()`. This patch opts the OSS
+channel into the same override behaviour as internal-only channels so
+users building from source can point Warp at a self-hosted multi-agent
+backend (e.g. for local-model inference).
+
+---
+ crates/warp_core/src/channel/mod.rs | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/crates/warp_core/src/channel/mod.rs b/crates/warp_core/src/channel/mod.rs
+--- a/crates/warp_core/src/channel/mod.rs
++++ b/crates/warp_core/src/channel/mod.rs
+@@ -37,13 +37,16 @@ impl Channel {
+     /// Whether this channel honors the `--server-root-url` / `--ws-server-url` /
+     /// `--session-sharing-server-url` flags (and their `WARP_*` env-var equivalents).
+     ///
+-    /// Release channels (`Stable`, `Preview`, `Oss`) ignore these overrides so shipped
++    /// Release channels (`Stable`, `Preview`) ignore these overrides so shipped
+     /// builds can't be redirected away from their baked-in server URLs. Internal-only channels
+     /// (`Dev`, `Local`, `Integration`) continue to honor them for local development and testing.
++    ///
++    /// `Oss` is opted in so users building from source can point Warp at a self-hosted
++    /// `multi_agent` backend (e.g. for local model inference).
+     pub fn allows_server_url_overrides(&self) -> bool {
+         match self {
+-            Channel::Dev | Channel::Local | Channel::Integration => true,
+-            Channel::Stable | Channel::Preview | Channel::Oss => false,
++            Channel::Dev | Channel::Local | Channel::Integration | Channel::Oss => true,
++            Channel::Stable | Channel::Preview => false,
+         }
+     }
+ 

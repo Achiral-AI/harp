@@ -1,0 +1,11 @@
+warp-local-inference is licensed under the GNU Affero General Public License,
+version 3 or later (AGPL-3.0-or-later). The full text of the license is
+available at https://www.gnu.org/licenses/agpl-3.0.txt.
+
+This project incorporates protobuf bindings vendored from the
+warp-proto-apis project (https://github.com/warpdotdev/warp-proto-apis), which
+is itself licensed under AGPL-3.0. The bindings live under
+vendor/warp-proto-apis/ as a git submodule and retain their upstream license.
+
+This project is not affiliated with or endorsed by Warp Technologies, Inc.
+"Warp" is a trademark of Warp Technologies, Inc.

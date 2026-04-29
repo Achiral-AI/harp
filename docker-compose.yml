@@ -1,0 +1,47 @@
+name: harp
+
+services:
+  harp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: harp:latest
+    container_name: harp
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - LITELLM_BASE_URL=http://litellm:4000/v1
+    ports:
+      - "${SHIM_PORT:-8787}:${SHIM_PORT:-8787}"
+    depends_on:
+      litellm:
+        condition: service_healthy
+    extra_hosts:
+      # Lets harp reach services on the host (e.g. an Ollama instance you
+      # didn't put behind LiteLLM). On Linux this is provided automatically.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${SHIM_PORT:-8787}/healthz').read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: harp-litellm
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: ["--config", "/app/config.yaml", "--host", "0.0.0.0", "--port", "4000"]
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "4000:4000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4000/health/liveliness"]
+      interval: 10s
+      timeout: 3s
+      retries: 10

@@ -1,0 +1,50 @@
+# LiteLLM proxy config.
+#
+# Two model groups are exposed:
+#   - local-primary    : a model running on your machine (Ollama/vLLM/LM Studio)
+#   - frontier-fallback: a frontier provider used when local fails
+#
+# The router falls back from local-primary to frontier-fallback on errors and
+# context-window exhaustion. The shim talks to this proxy at $LITELLM_BASE_URL.
+
+model_list:
+  # ----- local-primary --------------------------------------------------------
+  - model_name: local-primary
+    litellm_params:
+      model: ollama_chat/${LOCAL_PRIMARY_MODEL}
+      api_base: ${OLLAMA_BASE_URL}
+
+  # ----- frontier-fallback ----------------------------------------------------
+  - model_name: frontier-fallback
+    litellm_params:
+      model: anthropic/${FRONTIER_PRIMARY_MODEL}
+      api_key: ${ANTHROPIC_API_KEY}
+
+  - model_name: frontier-openai
+    litellm_params:
+      model: openai/${FRONTIER_OPENAI_MODEL}
+      api_key: ${OPENAI_API_KEY}
+
+  - model_name: frontier-google
+    litellm_params:
+      model: gemini/${FRONTIER_GOOGLE_MODEL}
+      api_key: ${GOOGLE_API_KEY}
+
+litellm_settings:
+  # Order of fallback chains, used when the primary model errors.
+  fallbacks:
+    - local-primary: ["frontier-fallback", "frontier-openai", "frontier-google"]
+
+  # Used when the primary model exceeds its context window.
+  context_window_fallbacks:
+    - local-primary: ["frontier-fallback"]
+
+  # Drop unsupported params (e.g. tool-call schema params Ollama may not honour)
+  # rather than failing hard.
+  drop_params: true
+
+  # Surface upstream provider errors instead of swallowing them.
+  set_verbose: false
+
+general_settings:
+  master_key: ${LITELLM_MASTER_KEY}

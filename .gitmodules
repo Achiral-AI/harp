@@ -1,0 +1,3 @@
+[submodule "vendor/warp-proto-apis"]
+	path = vendor/warp-proto-apis
+	url = https://github.com/warpdotdev/warp-proto-apis.git
