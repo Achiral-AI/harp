@@ -1,5 +1,5 @@
 # Development
-Notes for hacking on harp without Docker.
+Notes for hacking on Harp without Docker.
 ## Local development (without Docker)
 ```bash
 # From the repo root.

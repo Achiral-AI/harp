@@ -1,7 +1,7 @@
-# harp
+# Harp
 A local-first inference shim for the open-source
 [Warp](https://github.com/warpdotdev/warp) terminal. (Yes, the W flipped.)
-harp routes Warp's native agent (Oz) through a model running on your own
+Harp routes Warp's native agent (Oz) through a model running on your own
 machine via [Ollama](https://ollama.com), [vLLM](https://github.com/vllm-project/vllm),
 [LM Studio](https://lmstudio.ai), or anything OpenAI-compatible — and falls back
 to Warp's own backend (and frontier models behind it) when the local model isn't
@@ -10,7 +10,7 @@ a good fit for the request.
 ```text
                       ┌──────────────────────────────────────┐
  patched Warp client  │                                      │
- ────────────────────►│  harp  (this project, :8787)         │
+ ────────────────────►│  Harp  (this project, :8787)         │
  WARP_SERVER_ROOT_URL │                                      │
  = http://:8787       │  • transparent reverse proxy of all  │
                       │    auth, GraphQL, telemetry, …       │
@@ -28,7 +28,7 @@ a good fit for the request.
 
 The OSS Warp repo is a *client*. All inference goes to a single endpoint on
 `app.warp.dev`. There is no in-client provider SDK to swap. Re-implementing the
-full multi-agent server protocol is a multi-week project. harp sidesteps that
+full multi-agent server protocol is a multi-week project. Harp sidesteps that
 by transparently proxying everything to Warp's real backend by default and
 only intercepting the inference endpoint when a local model can usefully serve
 the request.
@@ -47,7 +47,7 @@ the request.
 
 ## Install
 ```bash
-git clone --recurse-submodules https://github.com/your-org/harp.git
+git clone --recurse-submodules https://github.com/marvindanig/harp.git
 cd harp
 cp .env.example .env
 # edit .env to set OLLAMA_BASE_URL and (optionally) ANTHROPIC_API_KEY etc.
@@ -60,21 +60,21 @@ git apply /path/to/harp/patches/0001-allow-oss-channel-server-url-override.patch
 ./script/run    # builds and launches the patched Warp
 ```
 
-Point Warp at harp:
+Point Warp at Harp:
 
 ```bash
 WARP_SERVER_ROOT_URL=http://127.0.0.1:8787 ./script/run
 ```
 
-That's it. Warp will sign in normally (harp forwards the auth dance to
+That's it. Warp will sign in normally (Harp forwards the auth dance to
 `app.warp.dev`), and inference requests will be served locally when eligible.
 
 ## Modes
 
-harp has three operating modes, controlled by `SHIM_MODE` in `.env`:
+Harp has three operating modes, controlled by `SHIM_MODE` in `.env`:
 
 - `proxy` *(default)* — pure transparent proxy. No local inference. Useful as a
-  smoke test that the patched Warp + override + harp are wired correctly.
+  smoke test that the patched Warp + override + Harp are wired correctly.
 - `hijack` — try local model first; fall back to upstream on ineligible
   requests, errors, or low-quality responses.
 - `local-only` — refuse to forward upstream. For air-gapped / fully-offline
@@ -85,8 +85,8 @@ harp has three operating modes, controlled by `SHIM_MODE` in `.env`:
 ```
 src/harp/            Python package source
 tests/               Unit tests
-Dockerfile           Builds the harp image
-docker-compose.yml   Compose stack: harp + litellm
+Dockerfile           Builds the Harp image
+docker-compose.yml   Compose stack: Harp + litellm
 pyproject.toml       Python package metadata
 litellm/             LiteLLM proxy config (model groups + fallbacks)
 patches/             Patches to apply to a Warp OSS checkout

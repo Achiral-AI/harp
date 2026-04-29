@@ -11,8 +11,8 @@
 ## 2. Clone with submodules
 
 ```bash
-git clone --recurse-submodules https://github.com/your-org/warp-local-inference.git
-cd warp-local-inference
+git clone --recurse-submodules https://github.com/marvindanig/harp.git
+cd harp
 ```
 
 If you already cloned without `--recurse-submodules`:
@@ -61,13 +61,13 @@ cd /path/to/your/warp-checkout
 ./script/run         # builds and runs Warp from source
 ```
 
-## 6. Point Warp at harp
+## 6. Point Warp at Harp
 
 ```bash
 WARP_SERVER_ROOT_URL=http://127.0.0.1:8787 ./script/run
 ```
 
-You should see in `make logs` that requests are flowing through harp. If
+You should see in `make logs` that requests are flowing through Harp. If
 `SHIM_MODE=hijack`, eligible inference requests are served from your local model
 and ineligible ones are forwarded to `app.warp.dev` automatically.
 
