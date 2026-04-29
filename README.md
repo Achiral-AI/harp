@@ -126,16 +126,26 @@ Caveats worth knowing:
 
 ### Tracking your actual savings
 
-Harp ships a live dashboard that reads its own counters from `GET /stats`:
+Harp ships three views into its own counters at `GET /stats`:
 
 ```bash
-make watch     # full-screen live view, refreshed every second
+make watch     # full-screen live terminal dashboard, refreshed every second
 make stats     # one JSON snapshot for scripts / quick checks
 ```
 
-The dashboard shows total requests, the served-local ratio, top
-ineligibility reasons (so you know *why* requests bypass the local model),
-and top upstream-forward reasons. Counters reset whenever the Harp container
+In-window pill: the patched Warp OSS client also renders a live
+`L:R 62:38` pill in the top-right of the tab bar (just left of the
+avatar / settings buttons) that polls the same `/stats` endpoint once
+per second. The pill is always on whenever Harp is reachable on the
+configured `WARP_SERVER_ROOT_URL` and silently disappears otherwise,
+so a vanilla Warp OSS launch sees nothing extra. Hover the pill for
+the headline counts (total / local / upstream / uptime). The pill
+ships via `patches/0002-harp-stats-pill.patch`, applied automatically
+by `make patch-warp`.
+
+The terminal dashboard additionally shows top ineligibility reasons
+(so you know *why* requests bypass the local model) and top
+upstream-forward reasons. Counters reset whenever the Harp container
 restarts.
 
 ## Project layout

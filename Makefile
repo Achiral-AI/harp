@@ -24,10 +24,11 @@ stats: ## Print one /stats snapshot as JSON.
 watch: ## Live dashboard: local-serve ratio, refreshed every second.
 	@./scripts/harp-watch
 
-patch-warp: ## Apply the channel patch to a Warp checkout. Usage: make patch-warp WARP_DIR=/path/to/warp
+patch-warp: ## Apply Harp's patches to a Warp checkout. Usage: make patch-warp WARP_DIR=/path/to/warp
 	@test -n "$(WARP_DIR)" || (echo "Set WARP_DIR=/path/to/warp"; exit 1)
 	cd "$(WARP_DIR)" && git apply $(CURDIR)/patches/0001-allow-oss-channel-server-url-override.patch
-	@echo "Patch applied. Now run: WARP_SERVER_ROOT_URL=http://127.0.0.1:$${SHIM_PORT:-8787} ./script/run"
+	cd "$(WARP_DIR)" && git apply $(CURDIR)/patches/0002-harp-stats-pill.patch
+	@echo "Patches applied. Now run: WARP_SERVER_ROOT_URL=http://127.0.0.1:$${SHIM_PORT:-8787} ./script/run"
 
 test: ## Run harp unit tests.
 	python -m pytest -q

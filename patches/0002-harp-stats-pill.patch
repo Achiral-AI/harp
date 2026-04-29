@@ -1,0 +1,410 @@
+From: harp
+Subject: [PATCH] Add live Harp /stats local-serve ratio pill to right-side tab bar
+
+Adds a small "L:R 62:38" status pill to the top-right of the patched Warp
+OSS tab bar. The pill polls Harp's `/stats` endpoint once per second
+(matching `make watch` cadence) on the configured `WARP_SERVER_ROOT_URL`
+and renders local:remote share as a live ratio. When `/stats` isn't
+reachable (e.g. a vanilla Warp OSS launch with no Harp running) the
+pill silently disappears — there is no UI when there's no Harp to talk to.
+
+Mirrors the existing `Autoupdate::poll_for_update` recurring-poll
+pattern (see `app/src/autoupdate/mod.rs`) and the existing "update
+ready" pill render (see `Workspace::render_tab_overflow_menu`) for
+visual consistency.
+
+Files:
+  - app/src/workspace/harp_stats.rs   (new module: poller + snapshot)
+  - app/src/workspace/mod.rs          (register HarpStatsModel singleton)
+  - app/src/workspace/util.rs         (add harp_stats_pill mouse state)
+  - app/src/workspace/view.rs         (render pill in right-side controls)
+
+---
+ app/src/workspace/harp_stats.rs | 244 ++++++++++++++++++++++++++++++++
+ app/src/workspace/mod.rs        |   5 +
+ app/src/workspace/util.rs       |   1 +
+ app/src/workspace/view.rs       |  79 +++++++++++
+ 4 files changed, 329 insertions(+)
+
+diff --git a/app/src/workspace/harp_stats.rs b/app/src/workspace/harp_stats.rs
+new file mode 100644
+index 0000000..2d3e7c0
+--- /dev/null
++++ b/app/src/workspace/harp_stats.rs
+@@ -0,0 +1,244 @@
++//! Live "L:R" pill — polls Harp's `/stats` endpoint once per second and exposes
++//! the latest snapshot to the right-side tab-bar pill. Hidden whenever `/stats`
++//! is unreachable, so a vanilla Warp OSS launch (no Harp on the configured
++//! server URL) shows nothing.
++//!
++//! Shipped from the Harp project as
++//! `patches/0002-harp-stats-pill.patch` against the Warp OSS checkout.
++
++use std::sync::Arc;
++use std::time::Duration;
++
++use serde::Deserialize;
++use warp_core::channel::ChannelState;
++use warpui::r#async::Timer;
++use warpui::{Entity, ModelContext, SingletonEntity};
++
++/// Snapshot of Harp's `/stats` endpoint. Fields mirror the JSON produced by
++/// `src/harp/stats.py` exactly — see also `scripts/harp-watch` for the
++/// terminal dashboard that consumes the same shape.
++#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
++#[serde(default)]
++pub struct HarpStatsSnapshot {
++    pub total: u64,
++    pub served_local: u64,
++    pub forwarded_upstream: u64,
++    pub errors: u64,
++    pub local_serve_ratio: f64,
++    pub uptime_s: f64,
++}
++
++/// Singleton model that owns the latest [`HarpStatsSnapshot`] plus a
++/// reachability flag. Polled in the background via `ctx.spawn` + `Timer`,
++/// matching the existing recurring-poll pattern in `autoupdate::Autoupdate`.
++pub struct HarpStatsModel {
++    snapshot: Option<HarpStatsSnapshot>,
++    reachable: bool,
++    client: Arc<http_client::Client>,
++}
++
++impl HarpStatsModel {
++    /// Cadence — matches `scripts/harp-watch`.
++    const POLL_INTERVAL: Duration = Duration::from_secs(1);
++
++    pub fn new(ctx: &mut ModelContext<Self>) -> Self {
++        let mut me = Self {
++            snapshot: None,
++            reachable: false,
++            client: Arc::new(http_client::Client::new()),
++        };
++        me.poll(ctx);
++        me
++    }
++
++    pub fn snapshot(&self) -> Option<&HarpStatsSnapshot> {
++        self.snapshot.as_ref()
++    }
++
++    pub fn reachable(&self) -> bool {
++        self.reachable
++    }
++
++    /// `L:R 62:38`, or `L:R --:--` before any traffic has been observed (or
++    /// when `/stats` is unreachable). The remote share is computed as the
++    /// complement of the local share so the two values always sum to 100.
++    pub fn pill_label(&self) -> String {
++        match self.snapshot.as_ref() {
++            Some(s) if s.total > 0 => {
++                let local_pct = (s.local_serve_ratio.clamp(0.0, 1.0) * 100.0).round() as u32;
++                let local_pct = local_pct.min(100);
++                let remote_pct = 100u32 - local_pct;
++                format!("L:R {local_pct}:{remote_pct}")
++            }
++            _ => "L:R --:--".to_string(),
++        }
++    }
++
++    /// Multi-line tooltip that mirrors the headline numbers from
++    /// `harp-watch`: total / served-local / forwarded-upstream / uptime.
++    pub fn tooltip_label(&self) -> String {
++        match self.snapshot.as_ref() {
++            Some(s) => format!(
++                "Harp · /stats\n\
++                 Total:      {total}\n\
++                 Local:      {local}\n\
++                 Upstream:   {upstream}\n\
++                 Errors:     {errors}\n\
++                 Uptime:     {uptime:.0}s",
++                total = s.total,
++                local = s.served_local,
++                upstream = s.forwarded_upstream,
++                errors = s.errors,
++                uptime = s.uptime_s,
++            ),
++            None => "Harp · /stats\nWaiting for first sample…".to_string(),
++        }
++    }
++
++    /// Drives one poll round and self-reschedules. Same shape as
++    /// `Autoupdate::poll_for_update`: kick off the work synchronously, then
++    /// `ctx.spawn` a `Timer` whose continuation calls `poll` again.
++    fn poll(&mut self, ctx: &mut ModelContext<Self>) {
++        self.kick_off_fetch(ctx);
++        ctx.spawn(
++            async {
++                Timer::after(Self::POLL_INTERVAL).await;
++            },
++            |me, _, ctx| me.poll(ctx),
++        );
++    }
++
++    fn kick_off_fetch(&mut self, ctx: &mut ModelContext<Self>) {
++        let url = stats_url();
++        let client = self.client.clone();
++        ctx.spawn(
++            async move {
++                let response = match client.get(url.as_str()).send().await {
++                    Ok(response) => response,
++                    Err(_) => return None,
++                };
++                if !response.status().is_success() {
++                    return None;
++                }
++                response.json::<HarpStatsSnapshot>().await.ok()
++            },
++            |me, snapshot, ctx| me.apply_snapshot(snapshot, ctx),
++        );
++    }
++
++    fn apply_snapshot(
++        &mut self,
++        snapshot: Option<HarpStatsSnapshot>,
++        ctx: &mut ModelContext<Self>,
++    ) {
++        let was_reachable = self.reachable;
++        let prev_snapshot = self.snapshot.clone();
++
++        match snapshot {
++            Some(snapshot) => {
++                self.reachable = true;
++                self.snapshot = Some(snapshot);
++            }
++            None => {
++                self.reachable = false;
++            }
++        }
++
++        if was_reachable != self.reachable || prev_snapshot != self.snapshot {
++            ctx.notify();
++        }
++    }
++}
++
++/// Builds `<server_root_url>/stats`, ensuring exactly one slash in the join.
++fn stats_url() -> String {
++    let base = ChannelState::server_root_url();
++    let trimmed = base.trim_end_matches('/');
++    format!("{trimmed}/stats")
++}
++
++pub enum HarpStatsEvent {}
++
++impl Entity for HarpStatsModel {
++    type Event = HarpStatsEvent;
++}
++
++impl SingletonEntity for HarpStatsModel {}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn snapshot(total: u64, ratio: f64) -> HarpStatsSnapshot {
++        HarpStatsSnapshot {
++            total,
++            local_serve_ratio: ratio,
++            ..Default::default()
++        }
++    }
++
++    fn model_with(snapshot: Option<HarpStatsSnapshot>, reachable: bool) -> HarpStatsModel {
++        HarpStatsModel {
++            snapshot,
++            reachable,
++            client: Arc::new(http_client::Client::new_for_test()),
++        }
++    }
++
++    #[test]
++    fn pill_label_pre_traffic() {
++        let model = model_with(None, false);
++        assert_eq!(model.pill_label(), "L:R --:--");
++    }
++
++    #[test]
++    fn pill_label_zero_total() {
++        let model = model_with(Some(snapshot(0, 0.0)), true);
++        assert_eq!(model.pill_label(), "L:R --:--");
++    }
++
++    #[test]
++    fn pill_label_basic_ratio() {
++        let model = model_with(Some(snapshot(100, 0.62)), true);
++        assert_eq!(model.pill_label(), "L:R 62:38");
++    }
++
++    #[test]
++    fn pill_label_clamps_high_ratio() {
++        let model = model_with(Some(snapshot(50, 1.5)), true);
++        assert_eq!(model.pill_label(), "L:R 100:0");
++    }
++
++    #[test]
++    fn pill_label_clamps_negative_ratio() {
++        let model = model_with(Some(snapshot(50, -0.25)), true);
++        assert_eq!(model.pill_label(), "L:R 0:100");
++    }
++
++    #[test]
++    fn snapshot_deserializes_from_harp_stats_json() {
++        let raw = r#"{
++            "total": 76,
++            "served_local": 47,
++            "forwarded_upstream": 29,
++            "errors": 0,
++            "local_serve_ratio": 0.6184,
++            "uptime_s": 1234.5
++        }"#;
++        let s: HarpStatsSnapshot = serde_json::from_str(raw).unwrap();
++        assert_eq!(s.total, 76);
++        assert_eq!(s.served_local, 47);
++        assert_eq!(s.forwarded_upstream, 29);
++        assert_eq!(s.errors, 0);
++        assert!((s.local_serve_ratio - 0.6184).abs() < f64::EPSILON);
++        assert!((s.uptime_s - 1234.5).abs() < f64::EPSILON);
++    }
++
++    #[test]
++    fn snapshot_tolerates_missing_fields() {
++        // Defaults must apply when /stats is missing fields a future Harp
++        // version might add or rename, so the pill never crashes the UI.
++        let s: HarpStatsSnapshot = serde_json::from_str("{}").unwrap();
++        assert_eq!(s, HarpStatsSnapshot::default());
++    }
++}
+diff --git a/app/src/workspace/mod.rs b/app/src/workspace/mod.rs
+index a4432df..31c06bf 100644
+--- a/app/src/workspace/mod.rs
++++ b/app/src/workspace/mod.rs
+@@ -6,6 +6,7 @@ mod cli_install;
+ mod close_session_confirmation_dialog;
+ pub mod delete_conversation_confirmation_dialog;
+ mod global_actions;
++pub mod harp_stats;
+ pub mod header_toolbar_editor;
+ pub mod header_toolbar_item;
+ pub mod hoa_onboarding;
+@@ -100,6 +101,10 @@ pub use toast_stack::ToastStack;
+ 
+ pub fn init(app: &mut AppContext) {
+     app.add_singleton_model(|_| WorkspaceRegistry::new());
++    // Live Harp /stats poller for the right-side tab-bar pill. Self-disables
++    // when the configured server root URL doesn't expose /stats, so vanilla
++    // Warp OSS launches see no UI from this model.
++    app.add_singleton_model(harp_stats::HarpStatsModel::new);
+     use warpui::keymap::macros::*;
+     app.register_binding_validator::<Workspace>(is_binding_pty_compliant);
+ 
+diff --git a/app/src/workspace/util.rs b/app/src/workspace/util.rs
+index 857b61f..409fee5 100644
+--- a/app/src/workspace/util.rs
++++ b/app/src/workspace/util.rs
+@@ -35,6 +35,7 @@ pub(super) struct WorkspaceMouseStates {
+     pub(super) sign_in_button: MouseStateHandle,
+     pub(super) sign_up_button: MouseStateHandle,
+     pub(super) offline_icon: MouseStateHandle,
++    pub(super) harp_stats_pill: MouseStateHandle,
+     pub(super) avatar_icon: MouseStateHandle,
+     pub(super) header_dimming: MouseStateHandle,
+     pub(super) right_panel_icon: MouseStateHandle,
+diff --git a/app/src/workspace/view.rs b/app/src/workspace/view.rs
+index 6af9ef5..ea374be 100644
+--- a/app/src/workspace/view.rs
++++ b/app/src/workspace/view.rs
+@@ -17320,6 +17320,12 @@ impl Workspace {
+             }
+         }
+ 
++        // Harp /stats pill (right-most before avatar/settings). Self-disables
++        // when /stats on the configured server root URL isn't reachable.
++        if let Some(pill) = self.render_harp_stats_pill(appearance, ctx) {
++            target.add_child(pill);
++        }
++
+         // Legacy AI assistant button (non-agent-mode only)
+         if is_online
+             && !FeatureFlag::AgentMode.is_enabled()
+@@ -18041,6 +18047,79 @@ impl Workspace {
+         }
+     }
+ 
++    /// Pill that surfaces Harp's `/stats` local-vs-upstream serve ratio. Sits
++    /// just left of the avatar/settings cluster. Returns `None` when `/stats`
++    /// hasn't responded successfully yet — vanilla Warp OSS launches see
++    /// nothing here.
++    fn render_harp_stats_pill(
++        &self,
++        appearance: &Appearance,
++        ctx: &AppContext,
++    ) -> Option<Box<dyn Element>> {
++        use super::harp_stats::HarpStatsModel;
++
++        let model = HarpStatsModel::as_ref(ctx);
++        if !model.reachable() {
++            return None;
++        }
++        let label_text = model.pill_label();
++        let tooltip_text = model.tooltip_label();
++        let theme = appearance.theme();
++        let text_color = theme.main_text_color(theme.background());
++
++        let pill = ConstrainedBox::new(
++            Container::new(
++                Flex::row()
++                    .with_child(
++                        Text::new_inline(
++                            label_text,
++                            appearance.ui_font_family(),
++                            PILL_FONT_SIZE,
++                        )
++                        .with_color(text_color.into())
++                        .finish(),
++                    )
++                    .with_main_axis_size(MainAxisSize::Max)
++                    .with_main_axis_alignment(MainAxisAlignment::Center)
++                    .finish(),
++            )
++            .with_border(Border::all(1.).with_border_color(theme.accent().into()))
++            .with_corner_radius(CornerRadius::with_all(Radius::Percentage(50.)))
++            .with_uniform_margin(4.)
++            .with_uniform_padding(4.)
++            .with_margin_right(5.)
++            .finish(),
++        )
++        .with_width(TAB_BAR_PILL_WIDTH)
++        .finish();
++
++        let ui_builder = appearance.ui_builder().clone();
++        let hoverable = Hoverable::new(self.mouse_states.harp_stats_pill.clone(), move |state| {
++            let mut stack = Stack::new().with_child(pill);
++            if state.is_hovered() {
++                let tool_tip = ui_builder.tool_tip(tooltip_text.clone());
++                stack.add_positioned_overlay_child(
++                    tool_tip.build().finish(),
++                    OffsetPositioning::offset_from_parent(
++                        vec2f(0., 4.),
++                        ParentOffsetBounds::WindowByPosition,
++                        ParentAnchor::BottomMiddle,
++                        ChildAnchor::TopMiddle,
++                    ),
++                );
++            }
++            stack.finish()
++        });
++
++        Some(
++            SavePosition::new(
++                Container::new(Align::new(hoverable.finish()).finish()).finish(),
++                "harp_stats_pill",
++            )
++            .finish(),
++        )
++    }
++
+     fn render_tab_overflow_menu(
+         &self,
+         app: &AppContext,
